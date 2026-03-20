@@ -1,5 +1,6 @@
 accelerate
 fschat
+matplotlib
 numpy
 openai
 pandas
