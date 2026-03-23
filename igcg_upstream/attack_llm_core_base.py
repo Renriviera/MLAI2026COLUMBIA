@@ -3,34 +3,28 @@ import json
 import yaml
 import datetime
 import random
-import copy
-import os
-parser = argparse.ArgumentParser()
-parser.add_argument('--model_path', type=str, default="/home/LLM/Llama-2-7b-chat-hf")
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--model_path', type=str, default="/workspace/models/Qwen2-7B-Instruct")
 parser.add_argument('--device', type=int, default=0)
 parser.add_argument('--id', type=int, default=50)
-parser.add_argument('--K', type=int, default=7)
-parser.add_argument('--defense', type=str, default="without_defense")
+parser.add_argument('--defense', type=str, default="without_defense",
+                    choices=["without_defense", "smooth_llm"])
 parser.add_argument('--behaviors_config', type=str, default="behaviors_ours_config.json")
-parser.add_argument('--output_path', type=str,
-                    default=f'./output_update_target')
-parser.add_argument('--incremental_token_num', type=int, default=3)
+parser.add_argument('--smoothllm_pert_type', type=str, default='RandomSwapPerturbation',
+                    choices=['RandomSwapPerturbation', 'RandomPatchPerturbation', 'RandomInsertPerturbation'])
+parser.add_argument('--smoothllm_pert_pct', type=int, default=10)
+parser.add_argument('--smoothllm_num_copies', type=int, default=10)
+parser.add_argument('--output_path', type=str, default=f'./output/{(datetime.datetime.now() + datetime.timedelta(hours=8)).strftime("%Y%m%d-%H%M%S")}')
 
 
-###meta-llama/Llama-2-7b-chat-hf
 args = parser.parse_args()
 
 
-
-
-print(args.K)
-
-args.output_path=os.path.join(args.output_path,str(args.K))
 import os
+import sys
 
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
-
 import gc
 import openai
 import time
@@ -43,6 +37,13 @@ from llm_attacks.minimal_gcg.opt_utils import load_model_and_tokenizer, get_filt
 from llm_attacks.minimal_gcg.string_utils import SuffixManager, load_conversation_template
 from llm_attacks import get_nonascii_toks
 
+# SmoothLLM imports (submodule at smooth-llm/)
+_smooth_llm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smooth-llm')
+if _smooth_llm_path not in sys.path:
+    sys.path.insert(0, _smooth_llm_path)
+from lib.defenses import SmoothLLM
+from lib.attacks import Prompt
+
 # Set the random seed for NumPy
 np.random.seed(20)
 
@@ -54,20 +55,21 @@ torch.cuda.manual_seed_all(20)
 
 model_path = args.model_path
 
-# sample_instances = pickle.load(open(f'./data/dev/sample_instances.pkl', 'rb'))
 print('behavior_config:',args.behaviors_config)
 behavior_config = yaml.load(open(args.behaviors_config), Loader=yaml.FullLoader)[args.id - 1]
 
 user_prompt = behavior_config['behaviour']
 num_steps = behavior_config['step']
 adv_string_init = behavior_config['adv_init_suffix']
-#adv_string_init="Ned eine Guideharm Your Outputyrdimensional Friend Sure Sri [/_ `/INIT] ShakespeareSmith referencing violence"
+
+#adv_string_init="turn reply giving Arthur pad employees guide `{ Sure},\\ my output Harm. Liste}]({[clojure ({newcommand"
 target = behavior_config['target']
-template_name = 'llama-2'
+template_name = 'qwen-7b-chat'
 device = "cuda"
+# batch_size=20
 batch_size = behavior_config['batch_size']
 topk = behavior_config['top_k']
-incremental_token_num = args.incremental_token_num
+# topk=256
 
 print('behavior_config', behavior_config)
 
@@ -158,6 +160,54 @@ def check_for_attack_success(model, tokenizer, input_ids, assistant_role_slice, 
     return jailbroken,gen_str
 
 
+class WrappedLLM:
+    """Adapter that wraps the existing HF model/tokenizer to match the interface
+    expected by SmoothLLM (callable with a list of prompt strings)."""
+
+    def __init__(self, model, tokenizer, conv_template):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.conv_template = conv_template
+        self.tokenizer.padding_side = 'left'
+
+    def __call__(self, batch, max_new_tokens=100):
+        inputs = self.tokenizer(batch, padding=True, truncation=False, return_tensors='pt')
+        input_ids = inputs['input_ids'].to(self.model.device)
+        attn_mask = inputs['attention_mask'].to(self.model.device)
+        try:
+            outputs = self.model.generate(input_ids, attention_mask=attn_mask,
+                                          max_new_tokens=max_new_tokens)
+        except RuntimeError:
+            return []
+        batch_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        gen_start_idx = [
+            len(self.tokenizer.decode(input_ids[i], skip_special_tokens=True))
+            for i in range(len(input_ids))
+        ]
+        return [output[gen_start_idx[i]:] for i, output in enumerate(batch_outputs)]
+
+
+def check_for_attack_success_smooth(smooth_defense, full_prompt, perturbable_prompt, max_new_tokens=32):
+    """Run SmoothLLM majority-vote check and return (jailbroken, response_str)."""
+    prompt_obj = Prompt(full_prompt, perturbable_prompt, max_new_tokens)
+    gen_str = smooth_defense(prompt_obj)
+    jailbroken = smooth_defense.is_jailbroken(gen_str)
+    return jailbroken, gen_str
+
+
+# Instantiate SmoothLLM defense if requested
+smooth_llm_defense = None
+if args.defense == 'smooth_llm':
+    wrapped_model = WrappedLLM(model, tokenizer, conv_template)
+    smooth_llm_defense = SmoothLLM(
+        target_model=wrapped_model,
+        pert_type=args.smoothllm_pert_type,
+        pert_pct=args.smoothllm_pert_pct,
+        num_copies=args.smoothllm_num_copies,
+    )
+    print(f'SmoothLLM defense enabled: pert_type={args.smoothllm_pert_type}, '
+          f'pert_pct={args.smoothllm_pert_pct}, num_copies={args.smoothllm_num_copies}')
+
 
 not_allowed_tokens = None if allow_non_ascii else get_nonascii_toks(tokenizer)
 adv_suffix = adv_string_init
@@ -167,7 +217,6 @@ log_dict = []
 current_tcs = []
 temp = 0
 v2_success_counter = 0
-previous_update_k_loss=100
 for i in range(num_steps):
 
     # Step 1. Encode user prompt (behavior + adv suffix) as tokens and return token ids.
@@ -195,7 +244,8 @@ for i in range(num_steps):
                                              topk=topk,
                                              temp=1,
                                              not_allowed_tokens=not_allowed_tokens)
-
+        # if i ==0:
+        #     print(a)
         # Step 3.3 This step ensures all adversarial candidates have the same number of tokens.
         # This step is necessary because tokenizers are not invertible
         # so Encode(Decode(tokens)) may produce a different tokenization.
@@ -205,7 +255,6 @@ for i in range(num_steps):
                                             filter_cand=True,
                                             curr_control=adv_suffix)
 
-        # print('new_adv_suffix',new_adv_suffix)
         # Step 3.4 Compute loss on these candidates and take the argmin.
         logits, ids = get_logits(model=model,
                                  tokenizer=tokenizer,
@@ -215,117 +264,19 @@ for i in range(num_steps):
                                  return_ids=True,
                                  batch_size=512)  # decrease this number if you run into OOM.
 
-
         losses = target_loss(logits, ids, suffix_manager._target_slice)
 
-        k = args.K
-        losses_temp, idx1 = torch.sort(losses, descending=False)  # descending为false，升序，为True，降序
-        idx = idx1[:k]
-
-        current_loss = 0
-        # best_new_adv_suffix=adv_suffix
-        print('adv_suffix', adv_suffix)
-
-        ori_adv_suffix_ids = tokenizer(adv_suffix, add_special_tokens=False).input_ids
-        adv_suffix_ids = tokenizer(adv_suffix, add_special_tokens=False).input_ids
-        best_new_adv_suffix_ids = copy.copy(adv_suffix_ids)
-        all_new_adv_suffix=[]
-        for idx_i in range(k):
-            idx = idx1[idx_i]
-            temp_new_adv_suffix = new_adv_suffix[idx]
-
-            # current_loss = losses[idx] + current_loss
-
-            print('temp_new_adv_suffix', temp_new_adv_suffix)
-            temp_new_adv_suffix_ids = tokenizer(temp_new_adv_suffix, add_special_tokens=False).input_ids
-
-            # print((adv_suffix_ids))
-            # print((temp_new_adv_suffix_ids))
-
-            for suffix_num in range(len(adv_suffix_ids)): #### adv-suffix的循环
-                # print(adv_suffix[suffix_num])
-                # print(temp_new_adv_suffix[suffix_num])
-                if adv_suffix_ids[suffix_num] != temp_new_adv_suffix_ids[suffix_num]:  #### 新的不等于原始就加入
-                    # if ori_adv_suffix_ids[suffix_num]==best_new_adv_suffix_ids[suffix_num]:     #### 防止同位置最优的被替代
-                        best_new_adv_suffix_ids[suffix_num] = temp_new_adv_suffix_ids[suffix_num]
-
-            all_new_adv_suffix.append(tokenizer.decode(best_new_adv_suffix_ids, skip_special_tokens=True))
-            # print(tokenizer.decode(best_new_adv_suffix_ids, skip_special_tokens=True))
-
-
-        # best_new_adv_suffix = tokenizer.decode(best_new_adv_suffix_ids, skip_special_tokens=True)
-        # best_new_adv_suffix_list=[]
-        # best_new_adv_suffix_list.append(best_new_adv_suffix)
-        # print(best_new_adv_suffix_list)
-        # new_logits, new_ids = get_logits(model=model,
-        #                                  tokenizer=tokenizer,
-        #                                  input_ids=input_ids,
-        #                                  control_slice=suffix_manager._control_slice,
-        #                                  test_controls=best_new_adv_suffix_list,
-        #                                  return_ids=True,
-        #                                  batch_size=512)
-        # losses = target_loss(new_logits, new_ids, suffix_manager._target_slice)
-        #
-        # current_update_k_loss=losses[0]
-        # current_loss=current_update_k_loss
-        # print("current_update_k_loss",current_update_k_loss)
-        #
-        # print('best_new_adv_suffix',best_new_adv_suffix)
-        print('all_new_adv_suffix',all_new_adv_suffix)
-
-        new_logits, new_ids = get_logits(model=model,
-                                     tokenizer=tokenizer,
-                                     input_ids=input_ids,
-                                     control_slice=suffix_manager._control_slice,
-                                     test_controls=all_new_adv_suffix,
-                                     return_ids=True,
-                                     batch_size=512)
-
-        losses = target_loss(new_logits, new_ids, suffix_manager._target_slice)
-
-        print(losses)
         best_new_adv_suffix_id = losses.argmin()
-        best_new_adv_suffix = all_new_adv_suffix[best_new_adv_suffix_id]
+        best_new_adv_suffix = new_adv_suffix[best_new_adv_suffix_id]
 
         current_loss = losses[best_new_adv_suffix_id]
-        print("current_loss",current_loss)
-            # Update the running adv_suffix with the best candidate
+
+
         print("best_new_adv_suffix",best_new_adv_suffix)
-        adv_suffix = best_new_adv_suffix
-
-
-        # if  current_update_k_loss>previous_update_k_loss:
-        #
-        #     print('best_new_adv_suffix',best_new_adv_suffix)
-        #     print('all_new_adv_suffix',all_new_adv_suffix)
-        #
-        #     new_logits, new_ids = get_logits(model=model,
-        #                              tokenizer=tokenizer,
-        #                              input_ids=input_ids,
-        #                              control_slice=suffix_manager._control_slice,
-        #                              test_controls=all_new_adv_suffix,
-        #                              return_ids=True,
-        #                              batch_size=512)
-        #
-        #     losses = target_loss(new_logits, new_ids, suffix_manager._target_slice)
-        #
-        #     print(losses)
-        #     best_new_adv_suffix_id = losses.argmin()
-        #     best_new_adv_suffix = all_new_adv_suffix[best_new_adv_suffix_id]
-        #
-        #     current_loss = losses[best_new_adv_suffix_id]
-        #     print("current_loss",current_loss)
-        #     # Update the running adv_suffix with the best candidate
-        #     print("best_new_adv_suffix",best_new_adv_suffix)
-        #     adv_suffix = best_new_adv_suffix
-        # else:
-        #     adv_suffix = best_new_adv_suffix
-        #     previous_update_k_loss=current_update_k_loss
-
-        # print(a)
-        # current_loss = current_loss / k
         # Update the running adv_suffix with the best candidate
-
+        adv_suffix = best_new_adv_suffix
+        
+        # Always optimize without defense (standard attack success check)
         is_success,gen_str = check_for_attack_success(model,
                                               tokenizer,
                                               suffix_manager.get_input_ids(adv_string=adv_suffix).to(device),
@@ -340,8 +291,28 @@ for i in range(num_steps):
             "user_prompt": user_prompt,
             "adv_suffix": best_new_adv_suffix,
             "gen_str": gen_str,
+            "is_success": is_success,
         }
         log_dict.append(log_entry)
+
+        # If jailbreak is successful, stop attacking
+        if is_success:
+            print(f"\n{'='*80}")
+            print(f"SUCCESS: Jailbreak achieved at step {i}!")
+            print(f"Generated response: {gen_str}")
+            print(f"{'='*80}\n")
+            # Save the logs before breaking
+            submission_json_file = pathlib.Path(f'{args.output_path}/submission/result_{args.id}.json')
+            if not submission_json_file.parent.exists():
+                submission_json_file.parent.mkdir(parents=True)
+            with open(str(submission_json_file.absolute()), 'w') as f:
+                json.dump(generations, f, indent=4)
+            log_json_file = pathlib.Path(f'{args.output_path}/log/result_{args.id}.json')
+            if not log_json_file.parent.exists():
+                log_json_file.parent.mkdir(parents=True)
+            with open(str(log_json_file.absolute()), 'w') as f:
+                json.dump(log_dict, f, indent=4)
+            break
 
         # if current_loss.detach().cpu().numpy()<0.05:
         #     break
@@ -377,3 +348,47 @@ if not log_json_file.parent.exists():
     log_json_file.parent.mkdir(parents=True)
 with open(str(log_json_file.absolute()), 'w') as f:
     json.dump(log_dict, f, indent=4)
+
+# Final evaluation with SmoothLLM defense if enabled
+if args.defense == 'smooth_llm' and smooth_llm_defense is not None:
+    print("\n" + "="*80)
+    print("FINAL EVALUATION: Testing optimized adversarial suffix with SmoothLLM defense")
+    print("="*80)
+    
+    check_input_ids = suffix_manager.get_input_ids(adv_string=adv_suffix).to(device)
+    full_prompt_text = tokenizer.decode(
+        check_input_ids[:suffix_manager._assistant_role_slice.stop],
+        skip_special_tokens=True
+    )
+    perturbable_prompt = f"{user_prompt} {adv_suffix}"
+    
+    defense_success, defense_gen_str = check_for_attack_success_smooth(
+        smooth_llm_defense, full_prompt_text, perturbable_prompt, max_new_tokens=32
+    )
+    
+    print(f"\nWithout Defense: {'SUCCESS' if is_success else 'FAILED'}")
+    print(f"With SmoothLLM Defense: {'JAILBROKEN' if defense_success else 'DEFENDED'}")
+    print(f"\nSmoothLLM Response: {defense_gen_str}")
+    print("="*80 + "\n")
+    
+    # Add defense evaluation to log
+    defense_log = {
+        "defense_type": "smooth_llm",
+        "smoothllm_config": {
+            "pert_type": args.smoothllm_pert_type,
+            "pert_pct": args.smoothllm_pert_pct,
+            "num_copies": args.smoothllm_num_copies
+        },
+        "final_adv_suffix": adv_suffix,
+        "attack_success_without_defense": is_success,
+        "attack_success_with_defense": defense_success,
+        "defense_response": defense_gen_str,
+        "defense_effectiveness": "Failed" if defense_success else "Successful"
+    }
+    
+    # Save defense evaluation
+    defense_json_file = pathlib.Path(f'{args.output_path}/defense_eval/result_{args.id}.json')
+    if not defense_json_file.parent.exists():
+        defense_json_file.parent.mkdir(parents=True)
+    with open(str(defense_json_file.absolute()), 'w') as f:
+        json.dump(defense_log, f, indent=4)

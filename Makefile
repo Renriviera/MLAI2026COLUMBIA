@@ -22,11 +22,15 @@ CONFIG ?= behaviors_config.json
 OURS_CONFIG ?= behaviors_ours_config.json
 INIT_CONFIG ?= behaviors_ours_config_init.json
 
-METHODS ?= A,B,C,D
+METHODS ?= A,B,C,D,F
 CYBER_CONFIG ?= data/cyber_behaviors.json
 
-.PHONY: help status attack-single attack-all attack-ours robust-a robust-b robust-c robust-d \
-        generate-config backup-results clean-output tmux-run smoke-test quick-eval
+.PHONY: help status attack-single attack-all attack-ours robust-a robust-b robust-c robust-d robust-f \
+        generate-config backup-results clean-output tmux-run smoke-test quick-eval \
+        thorough-D thorough-D-dry experiment-improved experiment-improved-dry download-vicuna \
+        transfer-experiment transfer-experiment-dry \
+        slotgcg-experiment slotgcg-experiment-dry \
+        target-ablation target-ablation-quick target-ablation-dry
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -48,31 +52,31 @@ status: ## GPU utilization, VRAM, disk usage
 # ── Base GCG attack ────────────────────────────────────────────────────────
 
 attack-single: ## Run single behavior: make attack-single BEHAVIOR_ID=1
-	python attack_llm_core_base.py \
+	python igcg_upstream/attack_llm_core_base.py \
 		--model_path $(MODEL_PATH) \
 		--device $(DEVICE) \
 		--id $(BEHAVIOR_ID) \
 		--defense $(DEFENSE) \
-		--behaviors_config $(CONFIG)
+		--behaviors_config igcg_upstream/$(CONFIG)
 
 attack-all: ## Run all 50 behaviors serially (adapts multi-GPU script for 1 GPU)
-	python run_multiple_attack_our_target.py \
+	python igcg_upstream/run_multiple_attack_our_target.py \
 		--defense $(DEFENSE) \
-		--behaviors_config $(CONFIG)
+		--behaviors_config igcg_upstream/$(CONFIG)
 
 # ── I-GCG (our target) ─────────────────────────────────────────────────────
 
 attack-ours-init: ## Step 1: Generate initial suffixes with I-GCG
-	python attack_llm_core_best_update_our_target.py \
+	python igcg_upstream/attack_llm_core_best_update_our_target.py \
 		--model_path $(MODEL_PATH) \
-		--behaviors_config $(OURS_CONFIG)
+		--behaviors_config igcg_upstream/$(OURS_CONFIG)
 
 generate-config: ## Step 2: Build config with initialized suffixes
-	python generate_our_config.py
+	python igcg_upstream/generate_our_config.py
 
 attack-ours: ## Step 3: Run I-GCG with initialized config
-	python run_multiple_attack_our_target.py \
-		--behaviors_config $(INIT_CONFIG)
+	python igcg_upstream/run_multiple_attack_our_target.py \
+		--behaviors_config igcg_upstream/$(INIT_CONFIG)
 
 # ── Robust GCG variants ────────────────────────────────────────────────────
 
@@ -100,15 +104,21 @@ robust-d: ## Robust GCG D: inert buffer
 		--device $(DEVICE) \
 		--id $(BEHAVIOR_ID)
 
+robust-f: ## Robust GCG F: SlotGCG positional insertion + K-merge
+	python scripts/robust_gcg_F_slot_kmerge.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--id $(BEHAVIOR_ID)
+
 # ── SmoothLLM defense evaluation ───────────────────────────────────────────
 
 attack-with-smooth: ## Run attack + SmoothLLM defense eval
-	python attack_llm_core_base.py \
+	python igcg_upstream/attack_llm_core_base.py \
 		--model_path $(MODEL_PATH) \
 		--device $(DEVICE) \
 		--id $(BEHAVIOR_ID) \
 		--defense smooth_llm \
-		--behaviors_config $(CONFIG)
+		--behaviors_config igcg_upstream/$(CONFIG)
 
 # ── Fast evaluation (smoke / quick) ─────────────────────────────────────────
 
@@ -127,6 +137,84 @@ quick-eval: ## Quick eval: 15 behaviors x 200 steps (~3 h on A100)
 		--model_path $(MODEL_PATH) \
 		--device $(DEVICE) \
 		--behaviors_config $(CYBER_CONFIG)
+
+# ── Thorough Method D evaluation ───────────────────────────────────────────
+
+thorough-D: ## Thorough Method D: 15 behaviors x 3 seeds x 500 steps (~8.5 h on A100)
+	python scripts/thorough_method_D_eval.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--behaviors_config $(CYBER_CONFIG)
+
+thorough-D-dry: ## Dry-run thorough Method D (1 behavior, 5 steps)
+	python scripts/thorough_method_D_eval.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--behaviors_config $(CYBER_CONFIG) \
+		--dry_run
+
+# ── Improved GCG experiment ─────────────────────────────────────────────────
+
+experiment-improved: ## Full improved experiment (~10h on A100)
+	python scripts/improved_gcg_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+experiment-improved-dry: ## Dry-run improved experiment (5 steps per run)
+	python scripts/improved_gcg_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
+
+download-vicuna: ## Download Vicuna-7B-v1.5 for baseline testing
+	python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
+		AutoTokenizer.from_pretrained('lmsys/vicuna-7b-v1.5', cache_dir='/workspace/models'); \
+		AutoModelForCausalLM.from_pretrained('lmsys/vicuna-7b-v1.5', cache_dir='/workspace/models', torch_dtype=__import__('torch').float16, low_cpu_mem_usage=True)"
+
+# ── B1 Suffix Transfer Experiment ───────────────────────────────────────────
+
+transfer-experiment: ## Full B1 transfer experiment (~7.5h on A100)
+	python scripts/transfer_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+transfer-experiment-dry: ## Dry-run transfer experiment (5 steps per run)
+	python scripts/transfer_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
+
+# ── SlotGCG Experiment ──────────────────────────────────────────────────────
+
+slotgcg-experiment: ## SlotGCG on v2 cyber behaviours (~5h on A100)
+	python scripts/slotgcg_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+slotgcg-experiment-dry: ## Dry-run SlotGCG experiment (5 steps per run)
+	python scripts/slotgcg_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
+
+# ── Target Ablation Experiment ──────────────────────────────────────────────
+
+target-ablation: ## Full verification-gap ablation (~15 h on A100)
+	python scripts/target_ablation_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+target-ablation-quick: ## Quick ablation (BIDs 3/4/5, 200 steps, ~3 h)
+	python scripts/target_ablation_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--quick
+
+target-ablation-dry: ## Dry-run ablation (1 behaviour, 5 steps per condition)
+	python scripts/target_ablation_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
 
 # ── Analysis ────────────────────────────────────────────────────────────────
 

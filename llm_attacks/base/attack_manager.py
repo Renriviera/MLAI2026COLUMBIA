@@ -1,3 +1,11 @@
+"""Upstream multi-worker GCG attack framework from LLM-Attacks / I-GCG.
+
+This module implements the original AttackPrompt, PromptManager,
+MultiPromptAttack, and ModelWorker classes for distributed GCG optimization
+across multiple models.  It is retained as reference code; all active
+experiments use llm_attacks.minimal_gcg and robust_gcg.attack_harness instead.
+"""
+
 import gc
 import json
 import math
@@ -152,7 +160,7 @@ class AttackPrompt(object):
         encoding = self.tokenizer(prompt)
         toks = encoding.input_ids
 
-        if self.conv_template.name == 'llama-2':
+        if self.conv_template.name in ('llama-2', 'qwen-7b-chat'):
             self.conv_template.messages = []
 
             self.conv_template.append_message(self.conv_template.roles[0], None)
@@ -1532,6 +1540,8 @@ def get_workers(params, eval=False):
         if 'llama-2' in params.tokenizer_paths[i]:
             tokenizer.pad_token = tokenizer.unk_token
             tokenizer.padding_side = 'left'
+        if 'qwen' in params.tokenizer_paths[i].lower():
+            tokenizer.padding_side = 'left'
         if 'falcon' in params.tokenizer_paths[i]:
             tokenizer.padding_side = 'left'
         if not tokenizer.pad_token:
@@ -1551,7 +1561,7 @@ def get_workers(params, eval=False):
             conv.sep = '\n'
         elif conv.name == 'llama-2':
             conv.sep2 = conv.sep2.strip()
-        conv_templates.append(conv)
+        conv_templates.append(conv)  # qwen-7b-chat needs no special fixup
         
     print(f"Loaded {len(conv_templates)} conversation templates")
     workers = [

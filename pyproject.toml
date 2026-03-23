@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robust-gcg"
+version = "0.1.0"
+description = "Perturbation-aware adversarial suffix optimization for LLMs"
+requires-python = ">=3.10"
+dependencies = [
+    "accelerate",
+    "fschat",
+    "matplotlib",
+    "numpy",
+    "openai",
+    "pandas",
+    "PyYAML",
+    "sentencepiece",
+    "tokenizers",
+    "torch",
+    "torchvision",
+    "tqdm",
+    "transformers",
+]
+
+[tool.setuptools.packages.find]
+include = ["llm_attacks*", "robust_gcg*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]

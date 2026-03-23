@@ -19,7 +19,7 @@ REPO_DIR="${NETWORK_VOL}/MLAI2026COLUMBIA"
 MODEL_DIR="${NETWORK_VOL}/models"
 ENV_DIR="${NETWORK_VOL}/envs/iris"
 HF_CACHE="${NETWORK_VOL}/.cache/huggingface"
-DEFAULT_MODEL="meta-llama/Llama-2-7b-chat-hf"
+DEFAULT_MODEL="Qwen/Qwen2-7B-Instruct"
 
 echo "============================================"
 echo " MLAI2026COLUMBIA — RunPod Setup"
@@ -70,11 +70,11 @@ if command -v conda &>/dev/null; then
     source activate "${ENV_DIR}" 2>/dev/null || conda activate "${ENV_DIR}"
 
     pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install -e "${REPO_DIR}"
 else
     echo "  No conda found — using system Python + pip"
     pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install -e "${REPO_DIR}"
 fi
 
 # Verify torch sees CUDA
@@ -90,8 +90,7 @@ if torch.cuda.is_available():
 # ── 4. Download model weights ──────────────────────────────────────────────
 echo "[4/5] Downloading model weights (if needed)..."
 
-# Llama-2-7b-chat-hf requires a HuggingFace token with Meta license approval.
-# Set HF_TOKEN env var or log in via `huggingface-cli login`.
+# Set HF_TOKEN env var or log in via `huggingface-cli login` for gated models.
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "  HF_TOKEN detected — using for gated model access"
     huggingface-cli login --token "${HF_TOKEN}" 2>/dev/null || true
@@ -118,7 +117,7 @@ try:
     print(f'  Model downloaded successfully')
 except Exception as e:
     print(f'  WARNING: Could not download model: {e}')
-    print(f'  You may need to set HF_TOKEN or accept the Llama 2 license on huggingface.co')
+    print(f'  You may need to set HF_TOKEN for gated models')
     sys.exit(0)
 "
 
@@ -129,10 +128,10 @@ echo "[5/5] Creating local config..."
 cat > "${REPO_DIR}/.env.runpod" <<ENVEOF
 export REPO_DIR="${REPO_DIR}"
 export MODEL_PATH="${MODEL_DIR}"
-export DEFAULT_MODEL_PATH="${MODEL_DIR}/models--meta-llama--Llama-2-7b-chat-hf/snapshots"
+export DEFAULT_MODEL_PATH="${MODEL_DIR}/models--Qwen--Qwen2-7B-Instruct/snapshots"
 export HF_HOME="${HF_CACHE}"
 export CUDA_VISIBLE_DEVICES=0
-export PYTHONPATH="${REPO_DIR}:\${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_DIR}:\${PYTHONPATH:-}"  # fallback; prefer pip install -e
 ENVEOF
 
 echo ""

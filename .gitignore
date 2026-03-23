@@ -1,3 +1,9 @@
+# Project-specific
+output/
+Our_GCG_target_len_20/
+.env.runpod
+token_neighborhoods_cache/
+
 *env*
 
 # Byte-compiled / optimized / DLL files

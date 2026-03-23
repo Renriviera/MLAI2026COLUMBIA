@@ -1,3 +1,8 @@
+"""Upstream GCG attack wired to the multi-worker AttackPrompt/PromptManager stack.
+
+Retained as reference code; active experiments use minimal_gcg + robust_gcg instead.
+"""
+
 import gc
 
 import numpy as np
