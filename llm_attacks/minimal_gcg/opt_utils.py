@@ -69,7 +69,8 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     
     return grad
 
-def sample_control(control_toks, grad, batch_size, topk=256, temp=1, not_allowed_tokens=None):
+def sample_control(control_toks, grad, batch_size, topk=256, temp=1,
+                   not_allowed_tokens=None, n_flips=1):
 
     if not_allowed_tokens is not None:
         grad[:, not_allowed_tokens.to(grad.device)] = np.inf
@@ -78,18 +79,34 @@ def sample_control(control_toks, grad, batch_size, topk=256, temp=1, not_allowed
     control_toks = control_toks.to(grad.device)
 
     original_control_toks = control_toks.repeat(batch_size, 1)
-    new_token_pos = torch.arange(
-        0, 
-        len(control_toks), 
-        len(control_toks) / batch_size,
-        device=grad.device
-    ).type(torch.int64)
-    new_token_val = torch.gather(
-        top_indices[new_token_pos], 1, 
-        torch.randint(0, topk, (batch_size, 1),
-        device=grad.device)
-    )
-    new_control_toks = original_control_toks.scatter_(1, new_token_pos.unsqueeze(-1), new_token_val)
+
+    if n_flips == 1:
+        new_token_pos = torch.arange(
+            0,
+            len(control_toks),
+            len(control_toks) / batch_size,
+            device=grad.device
+        ).type(torch.int64)
+        new_token_val = torch.gather(
+            top_indices[new_token_pos], 1,
+            torch.randint(0, topk, (batch_size, 1),
+            device=grad.device)
+        )
+        new_control_toks = original_control_toks.scatter_(
+            1, new_token_pos.unsqueeze(-1), new_token_val
+        )
+    else:
+        new_token_pos = torch.randint(
+            0, len(control_toks), (batch_size, n_flips), device=grad.device
+        )
+        new_token_val = torch.gather(
+            top_indices[new_token_pos.reshape(-1)], 1,
+            torch.randint(0, topk, (batch_size * n_flips, 1),
+            device=grad.device)
+        ).reshape(batch_size, n_flips)
+        new_control_toks = original_control_toks.scatter_(
+            1, new_token_pos, new_token_val
+        )
 
     return new_control_toks
 
@@ -236,6 +253,8 @@ def load_model_and_tokenizer(model_path, tokenizer_path=None, device='cuda:0', *
         tokenizer.unk_token_id = 0
     if 'llama-2' in tokenizer_path:
         tokenizer.pad_token = tokenizer.unk_token
+        tokenizer.padding_side = 'left'
+    if 'qwen' in tokenizer_path.lower():
         tokenizer.padding_side = 'left'
     if 'falcon' in tokenizer_path:
         tokenizer.padding_side = 'left'

@@ -60,9 +60,9 @@ if _smooth_llm_path not in sys.path:
 def build_parser(method_name: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Robust GCG — {method_name}")
     # Model
-    parser.add_argument("--model_path", type=str, default="/home/LLM/Llama-2-7b-chat-hf")
+    parser.add_argument("--model_path", type=str, default="/workspace/models/Qwen2-7B-Instruct")
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--template_name", type=str, default="llama-2")
+    parser.add_argument("--template_name", type=str, default="qwen-7b-chat")
     # Behaviour
     parser.add_argument("--id", type=int, default=1)
     parser.add_argument("--behaviors_config", type=str, default="data/cyber_behaviors.json")
@@ -76,6 +76,8 @@ def build_parser(method_name: str) -> argparse.ArgumentParser:
     parser.add_argument("--n_pert_samples", type=int, default=5, help="M perturbation samples for robust eval")
     parser.add_argument("--robust_topk", type=int, default=16, help="Candidates promoted to tier-2")
     parser.add_argument("--warm_start_steps", type=int, default=50)
+    parser.add_argument("--n_flips", type=int, default=1,
+                        help="Token positions flipped per candidate (1=standard GCG)")
     # Scaffold
     parser.add_argument("--use_scaffold", action="store_true")
     # Token robustness (Script B/D)
@@ -228,9 +230,8 @@ def run_attack(
     evaluator = RobustEvaluator(model, tokenizer)
     logger = ExperimentLogger(method_name, args.output_path)
 
-    # SmoothLLM factory
-    wrapped_model = WrappedLLM(model, tokenizer)
-    smooth_factory = make_smooth_defense_factory(wrapped_model)
+    # SmoothLLM factory (deferred — only built when sweep actually runs)
+    smooth_factory = None
 
     # Optional per-script init (e.g. load token neighborhoods)
     extra_state: dict = {}
@@ -268,6 +269,7 @@ def run_attack(
             new_adv_suffix_toks = sample_control(
                 adv_suffix_tokens, coordinate_grad, batch_size,
                 topk=topk, temp=1, not_allowed_tokens=not_allowed_tokens,
+                n_flips=getattr(args, "n_flips", 1),
             )
             new_adv_suffix = get_filtered_cands(
                 tokenizer, new_adv_suffix_toks,
@@ -343,14 +345,18 @@ def run_attack(
     total_time = time.time() - t0_total
 
     # --- Final SmoothLLM sweep ---
-    print("  Running SmoothLLM evaluation sweep…")
-    sweep = run_smoothllm_sweep(
-        evaluator=evaluator,
-        smooth_defense_factory=smooth_factory,
-        suffix_manager=suffix_manager,
-        adv_suffix=adv_suffix,
-        user_prompt=user_prompt,
-    )
+    sweep: Dict[str, Any] = {}
+    if not getattr(args, "skip_smoothllm", False):
+        print("  Running SmoothLLM evaluation sweep…")
+        wrapped_model = WrappedLLM(model, tokenizer)
+        smooth_factory = make_smooth_defense_factory(wrapped_model)
+        sweep = run_smoothllm_sweep(
+            evaluator=evaluator,
+            smooth_defense_factory=smooth_factory,
+            suffix_manager=suffix_manager,
+            adv_suffix=adv_suffix,
+            user_prompt=user_prompt,
+        )
 
     summary = {
         "behavior_id": args.id,
@@ -377,9 +383,9 @@ def run_attack(
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PARAMS: Dict[str, Any] = {
-    "model_path": "/home/LLM/Llama-2-7b-chat-hf",
+    "model_path": "/workspace/models/Qwen2-7B-Instruct",
     "device": 0,
-    "template_name": "llama-2",
+    "template_name": "qwen-7b-chat",
     "id": 1,
     "behaviors_config": "data/cyber_behaviors.json",
     "batch_size": None,
@@ -401,6 +407,7 @@ _DEFAULT_PARAMS: Dict[str, Any] = {
     "plot_only": False,
     "seed": 235711,
     "buffer_token_id": None,
+    "n_flips": 1,
 }
 
 
@@ -476,8 +483,7 @@ def run_attack_with_model(
     evaluator = RobustEvaluator(model, tokenizer)
     logger = ExperimentLogger(method_name, args.output_path)
 
-    wrapped_model = WrappedLLM(model, tokenizer)
-    smooth_factory = make_smooth_defense_factory(wrapped_model)
+    smooth_factory = None
 
     extra_state: dict = {}
     if extra_init:
@@ -511,6 +517,7 @@ def run_attack_with_model(
             new_adv_suffix_toks = sample_control(
                 adv_suffix_tokens, coordinate_grad, batch_size,
                 topk=topk, temp=1, not_allowed_tokens=not_allowed_tokens,
+                n_flips=getattr(args, "n_flips", 1),
             )
             new_adv_suffix = get_filtered_cands(
                 tokenizer, new_adv_suffix_toks,
@@ -583,6 +590,8 @@ def run_attack_with_model(
     sweep: Dict[str, Any] = {}
     if not skip_smoothllm:
         print("  Running SmoothLLM evaluation sweep…")
+        wrapped_model = WrappedLLM(model, tokenizer)
+        smooth_factory = make_smooth_defense_factory(wrapped_model)
         sweep = run_smoothllm_sweep(
             evaluator=evaluator,
             smooth_defense_factory=smooth_factory,

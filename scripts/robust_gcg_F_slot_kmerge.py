@@ -342,148 +342,152 @@ class SlotAttackRunner:
 
         for step_i in range(start_step, self.num_steps):
             t0 = time.time()
-
-            # 1. Gradient computation
-            grad, loss_val = slot_token_gradients(
-                model,
-                self.embed_layer,
-                self.vocab_embeds,
-                self.behavior_embeds,
-                self.after_embeds,
-                self.target_embeds,
-                self.target_ids,
-                optim_ids,
-                self.optim_pos,
-                prefix_cache=self.prefix_cache,
-                before_embeds=None if self.prefix_cache else self.before_embeds,
-                loss_fn=self._custom_loss_fn,
-            )
-
-            # 2. Sample candidates
-            with torch.no_grad():
-                candidate_optim_ids, token_val, token_pos = slot_sample_control(
-                    optim_ids.squeeze(0),
-                    grad,
-                    self.search_width,
-                    topk=self.topk,
-                    not_allowed_tokens=self.not_allowed_tokens,
-                )
-
-                # 3. Filter via decode-reencode roundtrip
-                candidate_interleaved = interleave_behavior_and_controls(
-                    self.behavior_ids.expand(self.search_width, -1),
-                    candidate_optim_ids,
-                    self.optim_pos.unsqueeze(0).expand(self.search_width, -1),
-                )
-
-                decoded_texts = tokenizer.batch_decode(candidate_interleaved)
-                valid_mask = []
-                for j in range(len(decoded_texts)):
-                    reencoded = tokenizer(
-                        decoded_texts[j],
-                        return_tensors="pt",
-                        add_special_tokens=False,
-                    ).to(device)["input_ids"][0]
-                    valid_mask.append(torch.equal(reencoded, candidate_interleaved[j]))
-
-                valid_idx = [j for j, v in enumerate(valid_mask) if v]
-                if not valid_idx:
-                    valid_idx = list(range(len(decoded_texts)))
-                valid_idx_t = torch.tensor(valid_idx, device=device)
-                filtered_optim = candidate_optim_ids[valid_idx_t]
-                filtered_interleaved = candidate_interleaved[valid_idx_t]
-
-                # 4. Evaluate candidate losses
-                losses = slot_candidates_loss(
+            try:
+                # 1. Gradient computation
+                grad, loss_val = slot_token_gradients(
                     model,
                     self.embed_layer,
-                    filtered_interleaved,
+                    self.vocab_embeds,
+                    self.behavior_embeds,
                     self.after_embeds,
                     self.target_embeds,
                     self.target_ids,
-                    batch_size=args.eval_batch_size,
-                    prefix_cache=self.prefix_cache,
-                    before_embeds=None if self.prefix_cache else self.before_embeds,
-                    loss_fn=self._custom_loss_fn,
-                )
-
-                # 5. K-merge candidate selection
-                need_all = self._on_candidate_selected is not None
-                kmerge_result = _kmerge_select(
                     optim_ids,
-                    filtered_optim,
-                    losses,
-                    self.kmerge_k,
-                    model,
-                    self.embed_layer,
-                    self.behavior_ids,
-                    self.after_embeds,
-                    self.target_embeds,
-                    self.target_ids,
                     self.optim_pos,
-                    args.eval_batch_size,
                     prefix_cache=self.prefix_cache,
                     before_embeds=None if self.prefix_cache else self.before_embeds,
-                    return_all=need_all,
                     loss_fn=self._custom_loss_fn,
                 )
 
-                if need_all:
-                    best_optim, kmerge_loss, all_merged, all_merged_losses = kmerge_result
-                    best_optim, kmerge_loss = self._on_candidate_selected(
-                        self, step_i, best_optim, kmerge_loss,
-                        all_merged, all_merged_losses,
+                # 2. Sample candidates
+                with torch.no_grad():
+                    candidate_optim_ids, token_val, token_pos = slot_sample_control(
+                        optim_ids.squeeze(0),
+                        grad,
+                        self.search_width,
+                        topk=self.topk,
+                        not_allowed_tokens=self.not_allowed_tokens,
                     )
-                else:
-                    best_optim, kmerge_loss = kmerge_result
 
-                optim_ids = best_optim
-                current_loss = losses.min().item()
+                    # 3. Filter via decode-reencode roundtrip
+                    candidate_interleaved = interleave_behavior_and_controls(
+                        self.behavior_ids.expand(self.search_width, -1),
+                        candidate_optim_ids,
+                        self.optim_pos.unsqueeze(0).expand(self.search_width, -1),
+                    )
 
-                # 6. Evaluate clean ASR
-                interleaved_str = self._decode_interleaved(optim_ids)
-                eval_sm = self._make_eval_suffix_manager(interleaved_str)
-                jb, gen_str, eval_loss = self.evaluator.evaluate_clean(eval_sm, "")
+                    decoded_texts = tokenizer.batch_decode(candidate_interleaved)
+                    valid_mask = []
+                    for j in range(len(decoded_texts)):
+                        reencoded = tokenizer(
+                            decoded_texts[j],
+                            return_tensors="pt",
+                            add_special_tokens=False,
+                        ).to(device)["input_ids"][0]
+                        valid_mask.append(torch.equal(reencoded, candidate_interleaved[j]))
 
-            # Hook: on_step_end (e.g. F-C target update)
-            if self._on_step_end is not None:
-                self._on_step_end(self, step_i, optim_ids, gen_str, jb)
+                    valid_idx = [j for j, v in enumerate(valid_mask) if v]
+                    if not valid_idx:
+                        valid_idx = list(range(len(decoded_texts)))
+                    valid_idx_t = torch.tensor(valid_idx, device=device)
+                    filtered_optim = candidate_optim_ids[valid_idx_t]
+                    filtered_interleaved = candidate_interleaved[valid_idx_t]
 
-            wall = time.time() - t0
-            entry = {
-                "step": step_i,
-                "clean_loss": current_loss,
-                "robust_loss": kmerge_loss,
-                "clean_asr": 1.0 if jb else 0.0,
-                "robust_survival_rate": 0.0,
-                "adv_suffix": interleaved_str,
-                "optim_ids": optim_ids.squeeze(0).tolist(),
-                "gen_str": gen_str,
-                "wall_time": wall,
-            }
-            self.logger.log_step(args.id, entry)
+                    # 4. Evaluate candidate losses
+                    losses = slot_candidates_loss(
+                        model,
+                        self.embed_layer,
+                        filtered_interleaved,
+                        self.after_embeds,
+                        self.target_embeds,
+                        self.target_ids,
+                        batch_size=args.eval_batch_size,
+                        prefix_cache=self.prefix_cache,
+                        before_embeds=None if self.prefix_cache else self.before_embeds,
+                        loss_fn=self._custom_loss_fn,
+                    )
 
-            if step_i % 10 == 0:
-                self.logger.flush_steps(args.id)
-                print(
-                    f"  step {step_i:>4d}  loss={current_loss:.4f}  "
-                    f"kmerge_loss={kmerge_loss:.4f}  jailbroken={jb}  "
-                    f"{wall:.1f}s"
+                    # 5. K-merge candidate selection
+                    need_all = self._on_candidate_selected is not None
+                    kmerge_result = _kmerge_select(
+                        optim_ids,
+                        filtered_optim,
+                        losses,
+                        self.kmerge_k,
+                        model,
+                        self.embed_layer,
+                        self.behavior_ids,
+                        self.after_embeds,
+                        self.target_embeds,
+                        self.target_ids,
+                        self.optim_pos,
+                        args.eval_batch_size,
+                        prefix_cache=self.prefix_cache,
+                        before_embeds=None if self.prefix_cache else self.before_embeds,
+                        return_all=need_all,
+                        loss_fn=self._custom_loss_fn,
+                    )
+
+                    if need_all:
+                        best_optim, kmerge_loss, all_merged, all_merged_losses = kmerge_result
+                        best_optim, kmerge_loss = self._on_candidate_selected(
+                            self, step_i, best_optim, kmerge_loss,
+                            all_merged, all_merged_losses,
+                        )
+                    else:
+                        best_optim, kmerge_loss = kmerge_result
+
+                    optim_ids = best_optim
+                    current_loss = losses.min().item()
+
+                    # 6. Evaluate clean ASR
+                    interleaved_str = self._decode_interleaved(optim_ids)
+                    eval_sm = self._make_eval_suffix_manager(interleaved_str)
+                    jb, gen_str, eval_loss = self.evaluator.evaluate_clean(eval_sm, "")
+
+                # Hook: on_step_end (e.g. F-C target update)
+                if self._on_step_end is not None:
+                    self._on_step_end(self, step_i, optim_ids, gen_str, jb)
+
+                wall = time.time() - t0
+                entry = {
+                    "step": step_i,
+                    "clean_loss": current_loss,
+                    "robust_loss": kmerge_loss,
+                    "clean_asr": 1.0 if jb else 0.0,
+                    "robust_survival_rate": 0.0,
+                    "adv_suffix": interleaved_str,
+                    "optim_ids": optim_ids.squeeze(0).tolist(),
+                    "gen_str": gen_str,
+                    "wall_time": wall,
+                }
+                self.logger.log_step(args.id, entry)
+
+                if step_i % 10 == 0:
+                    self.logger.flush_steps(args.id)
+                    print(
+                        f"  step {step_i:>4d}  loss={current_loss:.4f}  "
+                        f"kmerge_loss={kmerge_loss:.4f}  jailbroken={jb}  "
+                        f"{wall:.1f}s"
+                    )
+
+                should_stop = (
+                    self._early_stop_fn(self, step_i, jb, gen_str)
+                    if self._early_stop_fn is not None
+                    else jb
                 )
+                if should_stop:
+                    print(f"  SUCCESS at step {step_i}: {gen_str[:80]}")
+                    self.logger.flush_steps(args.id)
+                    break
 
-            should_stop = (
-                self._early_stop_fn(self, step_i, jb, gen_str)
-                if self._early_stop_fn is not None
-                else jb
-            )
-            if should_stop:
-                print(f"  SUCCESS at step {step_i}: {gen_str[:80]}")
+                del grad
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            except torch.cuda.OutOfMemoryError:
                 self.logger.flush_steps(args.id)
-                break
-
-            del grad
-            gc.collect()
-            torch.cuda.empty_cache()
+                raise
 
         self.logger.flush_steps(args.id)
         total_time = time.time() - t0_total

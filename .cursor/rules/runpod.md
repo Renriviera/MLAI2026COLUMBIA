@@ -29,7 +29,7 @@ source /workspace/MLAI2026COLUMBIA/start_session.sh
 This activates the conda env, resolves the model path, and exports `RESOLVED_MODEL_PATH`.
 
 ## Model Path
-Scripts default to `/home/LLM/Llama-2-7b-chat-hf`. On RunPod, override with:
+Scripts default to `/workspace/models/Qwen2-7B-Instruct` (Qwen2-7B-Instruct). On RunPod, override with:
 ```
 --model_path $RESOLVED_MODEL_PATH
 ```

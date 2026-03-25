@@ -12,6 +12,11 @@ def load_conversation_template(template_name):
     return conv_template
 
 
+# Templates that use special-token framing (ChatML, Llama-2, etc.) and need
+# the incremental-tokenisation branch in SuffixManager.get_prompt().
+_SPECIAL_TOKEN_TEMPLATES = {'llama-2', 'qwen-7b-chat'}
+
+
 class SuffixManager:
     def __init__(self, *, tokenizer, conv_template, instruction, target, adv_string):
 
@@ -33,7 +38,7 @@ class SuffixManager:
         encoding = self.tokenizer(prompt)
         toks = encoding.input_ids
 
-        if self.conv_template.name == 'llama-2':
+        if self.conv_template.name in _SPECIAL_TOKEN_TEMPLATES:
             self.conv_template.messages = []
 
             self.conv_template.append_message(self.conv_template.roles[0], None)

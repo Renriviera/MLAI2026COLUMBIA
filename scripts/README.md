@@ -33,7 +33,8 @@ structured JSON reports.
 | `thorough_method_D_eval.py` | Deep method D eval, multi-seed | `thorough-D` | 8.5h |
 | `transfer_experiment.py` | B1 suffix transfer experiment | `transfer-experiment` | 7.5h |
 | `slotgcg_experiment.py` | Method F + verification + SmoothLLM | `slotgcg-experiment` | 5h |
-| `target_ablation_experiment.py` | Verification-gap ablation F-A to F-D | `target-ablation` | 15h |
+| `target_ablation_experiment.py` | Verification-gap ablation F-A to F-D | `target-ablation` | 4h |
+| `fc_scaled_experiment.py` | F-C (ARCA target update) on 30 behaviors | `fc-scaled` | 10h |
 
 All experiment scripts support `--dry_run` (5 steps per condition) for validation.
 

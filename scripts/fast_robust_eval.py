@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Fast robust GCG evaluation — smoke test or quick eval across methods A-D.
+"""Fast robust GCG evaluation — smoke test or quick eval across methods A-F.
 
 Loads the model **once** and runs multiple behaviors x methods sequentially,
 aggregating ASR into a summary table.
+
+Methods A-D use the standard suffix-based harness.  Method F uses SlotGCG
+positional insertion with K-merge and has its own optimisation loop.
 
 Tiers
 -----
 smoke : 5 behaviors, 100 steps, reduced batch/perturbation — ~20-40 min on A100
 quick : 15 behaviors, 200 steps, full batch, reduced perturbation — ~2-4 hours
+full  : 15 behaviors, 275 steps, smoke-level params — ~7.75 hours on A100
 
 Usage
 -----
     # Smoke test, all methods:
-    python scripts/fast_robust_eval.py --tier smoke --model_path /path/to/llama2
+    python scripts/fast_robust_eval.py --tier smoke --model_path /path/to/model
 
     # Quick eval, methods A and B only:
     python scripts/fast_robust_eval.py --tier quick --methods A,B
+
+    # SlotGCG only:
+    python scripts/fast_robust_eval.py --tier smoke --methods F
 
     # Override device or config:
     python scripts/fast_robust_eval.py --tier smoke --device 0 --behaviors_config data/cyber_behaviors.json
@@ -47,6 +54,11 @@ from robust_gcg.attack_harness import run_attack_with_model
 # ---------------------------------------------------------------------------
 
 def _load_method(name: str):
+    """Load a suffix-based method's select_candidate and extra_init.
+
+    Method F (SlotGCG) uses a separate dispatch path and should not be
+    loaded through this function.
+    """
     if name == "A":
         from scripts.robust_gcg_A_suffix_charperturb import select_candidate
         return select_candidate, None
@@ -60,7 +72,7 @@ def _load_method(name: str):
         from scripts.robust_gcg_D_inert_buffer import select_candidate, extra_init
         return select_candidate, extra_init
     else:
-        raise ValueError(f"Unknown method '{name}'. Choose from A, B, C, D.")
+        raise ValueError(f"Unknown suffix method '{name}'. Choose from A, B, C, D.")
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +96,14 @@ TIER_PRESETS: Dict[str, Dict[str, Any]] = {
         "top_k": 256,
         "robust_topk": 8,
         "n_pert_samples": 3,
+        "warm_start_steps": 30,
+    },
+    "full": {
+        "num_steps": 275,
+        "batch_size": 128,
+        "top_k": 128,
+        "robust_topk": 8,
+        "n_pert_samples": 2,
         "warm_start_steps": 30,
     },
 }
@@ -141,19 +161,19 @@ def _print_summary(results: List[Dict[str, Any]]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fast robust GCG evaluation across methods A-D",
+        description="Fast robust GCG evaluation across methods A-D,F",
     )
     parser.add_argument(
-        "--tier", type=str, required=True, choices=["smoke", "quick"],
-        help="smoke (~30 min) or quick (~3 h) on A100 PCIe",
+        "--tier", type=str, required=True, choices=["smoke", "quick", "full"],
+        help="smoke (~30 min), quick (~3 h), or full (~8 h) on A100",
     )
     parser.add_argument(
         "--methods", type=str, default="A,B,C,D",
-        help="Comma-separated method list, e.g. 'A,B' (default: A,B,C,D)",
+        help="Comma-separated method list, e.g. 'A,B' or 'F' (default: A,B,C,D)",
     )
-    parser.add_argument("--model_path", type=str, default="/home/LLM/Llama-2-7b-chat-hf")
+    parser.add_argument("--model_path", type=str, default="/workspace/models/Qwen2-7B-Instruct")
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--template_name", type=str, default="llama-2")
+    parser.add_argument("--template_name", type=str, default="qwen-7b-chat")
     parser.add_argument(
         "--behaviors_config", type=str, default="data/cyber_behaviors.json",
     )
@@ -210,6 +230,14 @@ def main():
     total_runs = len(behavior_ids) * len(methods)
     run_idx = 0
 
+    _FULL_METHOD_NAMES = {
+        "A": "A_suffix_charperturb",
+        "B": "B_token_perturb",
+        "C": "C_generation_eval",
+        "D": "D_inert_buffer",
+        "F": "F_slot_kmerge",
+    }
+
     for bid in behavior_ids:
         for method_name in methods:
             run_idx += 1
@@ -218,40 +246,62 @@ def main():
             print(f"  {label}")
             print(f"{'─' * 60}")
 
-            select_fn, extra_init_fn = _load_method(method_name)
-
-            use_scaffold = method_name == "D"
-
-            params: Dict[str, Any] = {
-                **preset,
-                "model_path": cli.model_path,
-                "device": cli.device,
-                "template_name": cli.template_name,
-                "id": bid,
-                "behaviors_config": cli.behaviors_config,
-                "use_scaffold": use_scaffold,
-                "seed": cli.seed,
-                "output_path": f"{output_root}/{method_name}/id_{bid}",
-            }
-
-            full_method_name = {
-                "A": "A_suffix_charperturb",
-                "B": "B_token_perturb",
-                "C": "C_generation_eval",
-                "D": "D_inert_buffer",
-            }[method_name]
+            full_method_name = _FULL_METHOD_NAMES.get(
+                method_name, f"unknown_{method_name}"
+            )
 
             try:
-                summary = run_attack_with_model(
-                    method_name=full_method_name,
-                    select_candidate=select_fn,
-                    model=model,
-                    tokenizer=tokenizer,
-                    params=params,
-                    extra_init=extra_init_fn,
-                    skip_smoothllm=not cli.smoothllm,
-                    skip_plots=True,
-                )
+                if method_name == "F":
+                    from scripts.robust_gcg_F_slot_kmerge import (
+                        run_slot_attack_with_model,
+                    )
+
+                    slot_params: Dict[str, Any] = {
+                        "model_path": cli.model_path,
+                        "device": cli.device,
+                        "template_name": cli.template_name,
+                        "id": bid,
+                        "behaviors_config": cli.behaviors_config,
+                        "seed": cli.seed,
+                        "output_path": f"{output_root}/{method_name}/id_{bid}",
+                        "num_steps": preset["num_steps"],
+                        "search_width": preset["batch_size"],
+                        "top_k": preset["top_k"],
+                    }
+
+                    summary = run_slot_attack_with_model(
+                        model=model,
+                        tokenizer=tokenizer,
+                        params=slot_params,
+                        skip_smoothllm=not cli.smoothllm,
+                        skip_plots=True,
+                    )
+                else:
+                    select_fn, extra_init_fn = _load_method(method_name)
+                    use_scaffold = method_name == "D"
+
+                    params: Dict[str, Any] = {
+                        **preset,
+                        "model_path": cli.model_path,
+                        "device": cli.device,
+                        "template_name": cli.template_name,
+                        "id": bid,
+                        "behaviors_config": cli.behaviors_config,
+                        "use_scaffold": use_scaffold,
+                        "seed": cli.seed,
+                        "output_path": f"{output_root}/{method_name}/id_{bid}",
+                    }
+
+                    summary = run_attack_with_model(
+                        method_name=full_method_name,
+                        select_candidate=select_fn,
+                        model=model,
+                        tokenizer=tokenizer,
+                        params=params,
+                        extra_init=extra_init_fn,
+                        skip_smoothllm=not cli.smoothllm,
+                        skip_plots=True,
+                    )
             except Exception as e:
                 print(f"  ERROR on {label}: {e}")
                 summary = {

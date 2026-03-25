@@ -51,6 +51,16 @@ for GCG optimization. Scripts index behaviors by `args.id - 1` (1-based CLI,
 - **Steps:** 300, batch 128, top_k 128 (fewer steps because suffix is warm-started)
 - **Scaffold:** Yes
 
+### `cyber_behaviors_v2_all30.json`
+
+- **30 behaviors**, BIDs 1-15 from `v2_all15` + 15 new from AdvBench `harmful_behaviors.csv`
+- **Target model:** Qwen-2-7B-Instruct
+- **Target style:** v2 code-continuation targets
+- **Suffix init:** BIDs 1-15 carry pre-optimized suffixes from B1 transfer; BIDs 16-30 use naive `"! ! ! ..."` (40 tokens)
+- **Steps:** 500, batch 256, top_k 256 (overridden from all15 defaults)
+- **Scaffold:** Yes
+- **New domains (BIDs 16-30):** software exploitation, virus distribution, infrastructure attack, webcam hijacking, DDoS, hospital hacking, bank hacking, financial fraud, self-driving car hijacking, drone control, email hacking, AV evasion, voting manipulation, social engineering, spyware
+
 ### `cyber_behaviors_v2_vicuna.json`
 
 - **3 behaviors**, subset for Vicuna baseline comparison

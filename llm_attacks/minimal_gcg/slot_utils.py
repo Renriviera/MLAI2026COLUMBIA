@@ -588,6 +588,42 @@ def make_negative_refusal_loss_fn(refusal_ids_list):
     return loss_fn
 
 
+def make_hybrid_ce_refusal_loss_fn(refusal_ids_list, lam: float = 0.2):
+    """Factory for a loss combining CE target matching + refusal suppression.
+
+    The combined objective is ``CE(target) + lam * refusal_log_prob``.
+    The CE term steers generation toward the target; the refusal term
+    pushes refusal-prefix probability down.  Minimising both jointly
+    gives the optimizer a positive signal (match target) and a negative
+    signal (don't produce refusal tokens).
+
+    Parameters
+    ----------
+    refusal_ids_list : list[Tensor]
+        Each element is a 1-D tensor of token IDs for one refusal prefix.
+    lam : float
+        Weight on the refusal component.  Default 0.2.
+
+    Returns
+    -------
+    loss_fn : callable
+        ``loss_fn(shift_logits, shift_labels) -> Tensor`` with shape
+        ``(B,)`` for batched input, matching the ``slot_candidates_loss``
+        contract.
+    """
+    refusal_fn = make_negative_refusal_loss_fn(refusal_ids_list)
+
+    def loss_fn(shift_logits: torch.Tensor, shift_labels: torch.Tensor) -> torch.Tensor:
+        B, T, V = shift_logits.shape
+        ce = nn.CrossEntropyLoss(reduction="none")(
+            shift_logits.reshape(-1, V), shift_labels.reshape(-1),
+        ).view(B, -1).mean(dim=1)
+        refusal = refusal_fn(shift_logits, shift_labels)
+        return ce + lam * refusal
+
+    return loss_fn
+
+
 # ---------------------------------------------------------------------------
 # Non-ASCII token filter (standalone, matching SlotGCG's version)
 # ---------------------------------------------------------------------------

@@ -30,7 +30,8 @@ CYBER_CONFIG ?= data/cyber_behaviors.json
         thorough-D thorough-D-dry experiment-improved experiment-improved-dry download-vicuna \
         transfer-experiment transfer-experiment-dry \
         slotgcg-experiment slotgcg-experiment-dry \
-        target-ablation target-ablation-quick target-ablation-dry
+        target-ablation target-ablation-quick target-ablation-dry \
+        fc-scaled fc-scaled-quick fc-scaled-dry
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -199,7 +200,7 @@ slotgcg-experiment-dry: ## Dry-run SlotGCG experiment (5 steps per run)
 
 # ── Target Ablation Experiment ──────────────────────────────────────────────
 
-target-ablation: ## Full verification-gap ablation (~15 h on A100)
+target-ablation: ## Full verification-gap ablation (~4 h on A100)
 	python scripts/target_ablation_experiment.py \
 		--model_path $(MODEL_PATH) \
 		--device $(DEVICE)
@@ -212,6 +213,44 @@ target-ablation-quick: ## Quick ablation (BIDs 3/4/5, 200 steps, ~3 h)
 
 target-ablation-dry: ## Dry-run ablation (1 behaviour, 5 steps per condition)
 	python scripts/target_ablation_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
+
+# ── F-C Scaled Experiment ──────────────────────────────────────────────────
+
+fc-scaled: ## F-C on 30 behaviors x 500 steps + SmoothLLM (~10 h on A100)
+	python scripts/fc_scaled_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+fc-scaled-quick: ## F-C on 5 behaviors x 200 steps (~1 h)
+	python scripts/fc_scaled_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--quick
+
+fc-scaled-dry: ## Dry-run F-C scaled (1 behaviour, 5 steps)
+	python scripts/fc_scaled_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--dry_run
+
+# ── F-C+D Hybrid Loss Experiment ─────────────────────────────────────────────
+
+fcd-scaled: ## F-C+D hybrid on 40 behaviors x 500 steps (~12 h on A100)
+	python scripts/fcd_scaled_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE)
+
+fcd-scaled-quick: ## F-C+D hybrid on 5 behaviors x 200 steps (~1 h)
+	python scripts/fcd_scaled_experiment.py \
+		--model_path $(MODEL_PATH) \
+		--device $(DEVICE) \
+		--quick
+
+fcd-scaled-dry: ## Dry-run F-C+D (1 behaviour, 5 steps)
+	python scripts/fcd_scaled_experiment.py \
 		--model_path $(MODEL_PATH) \
 		--device $(DEVICE) \
 		--dry_run
